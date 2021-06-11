@@ -11,50 +11,55 @@ module.exports = {
   // for more details on how to specify configuration options!
   //
   networks: {
+    // development: {
+    //   provider: () =>
+    //     new HDWalletProvider(
+    //       secretDevelopment.mnemonic,
+    //       `http://localhost:8545`
+    //     ),
+    //   host: "127.0.0.1", // Localhost (default: none)
+    //   port: 8545, // Standard BSC port (default: none)
+    //   network_id: "*", // Any network (default: none)
+    //   timeoutBlocks: 400,
+    // },
     development: {
-      provider: () =>
-        new HDWalletProvider(
-          secretDevelopment.mnemonic,
-          `http://localhost:8545`
-        ),
-      host: "127.0.0.1", // Localhost (default: none)
-      port: 8545, // Standard BSC port (default: none)
-      network_id: "*", // Any network (default: none)
-      timeoutBlocks: 400,
+      host: "127.0.0.1",     // Localhost (default: none)
+      port: 8545,            // Standard Ethereum port (default: none)
+      network_id: "*",       // Any network (default: none)
     },
-    testnet: {
-      provider: () =>
-        new HDWalletProvider(
-          secretTestnet.mnemonic,
-          `https://data-seed-prebsc-1-s2.binance.org:8545`
-        ),
-      network_id: 97,
-      confirmations: 10,
-      timeoutBlocks: 400,
-      skipDryRun: true,
-    },
-    mainnet: {
-      provider: () =>
-        new HDWalletProvider(
-          secret.mnemonic,
-          `https://bsc-dataseed1.binance.org`
-        ),
-      network_id: 56,
-      confirmations: 10,
-      timeoutBlocks: 200,
-      skipDryRun: true,
-    },
+  //   testnet: {
+  //     provider: () =>
+  //       new HDWalletProvider(
+  //         secretTestnet.mnemonic,
+  //         `https://data-seed-prebsc-1-s2.binance.org:8545`
+  //       ),
+  //     network_id: 97,
+  //     confirmations: 10,
+  //     timeoutBlocks: 400,
+  //     skipDryRun: true,
+  //   },
+  //   mainnet: {
+  //     provider: () =>
+  //       new HDWalletProvider(
+  //         secret.mnemonic,
+  //         `https://bsc-dataseed1.binance.org`
+  //       ),
+  //     network_id: 56,
+  //     confirmations: 10,
+  //     timeoutBlocks: 200,
+  //     skipDryRun: true,
+  //   },
   },
   compilers: {
     solc: {
-      version: "^0.8.0",
+      version: "^0.8.4",
       settings: {          // See the solidity docs for advice about optimization and evmVersion
         optimizer: {
           enabled: true,
           runs: 1
         }
-       //  evmVersion: "byzantium"
-       }
+      //  evmVersion: "byzantium"
+      }
     }
-  }
+  },
 };
