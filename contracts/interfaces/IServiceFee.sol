@@ -1,18 +1,18 @@
 // SPDX-License-Identifier: UNLICENSED
 
-pragma solidity ^0.8.0;
+pragma solidity ^0.8.4;
 pragma experimental ABIEncoderV2;
 
 /**
- * @notice Service Fee interface for Refinable NFT Marketplace
+ * @notice Service Fee interface for Afen NFT Marketplace
  */
 interface IServiceFee {
 
     /**
-     * @notice Lets admin set the refinable token contract
-     * @param _refinableTokenContract address of refinable token contract
+     * @notice Lets admin set the Afen token contract
+     * @param _afenTokenContract address of Afen token contract
      */
-    function setRefinableTokenContract(address _refinableTokenContract) external;
+    function setAfenTokenContract(address _afenTokenContract) external;
 
     /**
      * @notice Admin can add proxy address

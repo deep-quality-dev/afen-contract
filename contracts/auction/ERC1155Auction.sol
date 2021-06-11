@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: UNLICENSED
 
-pragma solidity ^0.8.0;
+pragma solidity ^0.8.4;
 pragma experimental ABIEncoderV2;
 
 import "@openzeppelin/contracts/utils/Context.sol";
@@ -8,16 +8,15 @@ import "@openzeppelin/contracts/utils/math/SafeMath.sol";
 import "@openzeppelin/contracts/security/ReentrancyGuard.sol";
 import "@openzeppelin/contracts/utils/Address.sol";
 import "@openzeppelin/contracts/token/ERC20/IERC20.sol";
-import "@openzeppelin/contracts/token/ERC721/IERC721.sol";
+import "@openzeppelin/contracts/token/ERC1155/IERC1155.sol";
 
-import "../tokens/HasSecondarySale.sol";
 import "../proxy/ServiceFeeProxy.sol";
 import "../roles/AdminRole.sol";
 
 /**
- * @notice Primary sale auction contract for Refinable NFTs
+ * @notice Primary sale auction contract for AFEN NFTs
  */
-contract ERC721Auction is Context, ReentrancyGuard, AdminRole {
+contract ERC1155Auction is Context, ReentrancyGuard, AdminRole {
     using SafeMath for uint256;
     using Address for address payable;
 
@@ -28,11 +27,11 @@ contract ERC721Auction is Context, ReentrancyGuard, AdminRole {
 
     event Destroy();
 
-    event AuctionCreated(uint256 indexed tokenId);
+    event AuctionCreated(uint256 indexed tokenId, address owner);
 
-    event AuctionStartTimeUpdated(uint256 indexed tokenId, uint256 startTime);
+    event AuctionEndTimeUpdated(uint256 indexed tokenId, address owner, uint256 endTime);
 
-    event AuctionEndTimeUpdated(uint256 indexed tokenId, uint256 endTime);
+    event AuctionStartTimeUpdated(uint256 indexed tokenId, address owner, uint256 startTime);
 
     event MinBidIncrementUpdated(uint256 minBidIncrement);
 
@@ -42,12 +41,14 @@ contract ERC721Auction is Context, ReentrancyGuard, AdminRole {
 
     event BidPlaced(
         uint256 indexed tokenId,
+        address owner,
         address indexed bidder,
         uint256 bidAmount
     );
 
     event BidWithdrawn(
         uint256 indexed tokenId,
+        address owner,
         address indexed bidder,
         uint256 bidAmount
     );
@@ -56,15 +57,15 @@ contract ERC721Auction is Context, ReentrancyGuard, AdminRole {
 
     event AuctionResulted(
         uint256 indexed tokenId,
+        address owner,
         address indexed winner,
         uint256 winningBidAmount
     );
 
-    event AuctionCancelled(uint256 indexed tokenId);
+    event AuctionCancelled(uint256 indexed tokenId, address owner);
 
     /// @notice Parameters of an auction
     struct Auction {
-        address owner;
         uint256 startPrice;
         uint256 startTime;
         uint256 endTime;
@@ -79,18 +80,16 @@ contract ERC721Auction is Context, ReentrancyGuard, AdminRole {
         uint256 bidTime;
     }
 
-    bytes4 private constant _INTERFACE_ID_HAS_SECONDARY_SALE = 0x5595380a;
-
     ServiceFeeProxy public serviceFeeProxy;
 
-    /// @notice ERC721 Token ID -> Auction Parameters
-    mapping(uint256 => Auction) public auctions;
+    /// @notice ERC1155 Token ID -> Owner -> Auction Parameters
+    mapping(uint256 => mapping(address => Auction)) public auctions;
 
-    /// @notice ERC721 Token ID -> bidder info (if a bid has been received)
-    mapping(uint256 => Bid[]) public bids;
+    /// @notice ERC1155 Token ID -> bidder info (if a bid has been received)
+    mapping(uint256 => mapping(address => Bid[])) public bids;
 
-    /// @notice ERC721 NFT
-    IERC721 public token;
+    /// @notice ERC1155 NFT
+    IERC1155 public token;
 
     /// @notice globally and across all auctions, the amount by which a bid has to increase
     uint256 public minBidIncrement = 10000000000000000;
@@ -112,9 +111,9 @@ contract ERC721Auction is Context, ReentrancyGuard, AdminRole {
         _;
     }
 
-    modifier onlyCreatedAuction(uint256 _tokenId) {
+    modifier onlyCreatedAuction(uint256 _tokenId, address _owner) {
         require(
-            auctions[_tokenId].created == true,
+            auctions[_tokenId][_owner].created == true,
             "Auction.onlyCreatedAuction: Auction does not exist"
         );
         _;
@@ -126,7 +125,7 @@ contract ERC721Auction is Context, ReentrancyGuard, AdminRole {
     * @param _serviceFeeProxy service fee proxy
      */
     constructor(
-        IERC721 _token,
+        IERC1155 _token,
         ServiceFeeProxy _serviceFeeProxy
     ) {
         require(address(_token) != address(0), "Invalid NFT");
@@ -151,19 +150,19 @@ contract ERC721Auction is Context, ReentrancyGuard, AdminRole {
         uint256 _startTimestamp,
         uint256 _endTimestamp
     ) external whenNotPaused {
-        // Check owner of the token is the creator and approved
+        // Check owner has token and approved
         require(
-            token.isApprovedForAll(token.ownerOf(_tokenId), address(this)),
+            token.balanceOf(_msgSender(), _tokenId) > 0,
+            "Auction.createAuction: Caller does not have the token"
+        );
+        require(
+            token.isApprovedForAll(_msgSender(), address(this)),
             "Auction.createAuction: Owner has not approved"
         );
-        require(
-            token.ownerOf(_tokenId) == _msgSender(),
-            "Auction.createAuction: Caller is not the owner"
-        );
 
-        _createAuction(_tokenId, _startPrice,_startTimestamp, _endTimestamp);
+        _createAuction(_tokenId, _startPrice, _startTimestamp, _endTimestamp);
 
-        emit AuctionCreated(_tokenId);
+        emit AuctionCreated(_tokenId, _msgSender());
     }
 
     /**
@@ -171,13 +170,14 @@ contract ERC721Auction is Context, ReentrancyGuard, AdminRole {
      * @dev Only callable when the auction is open
      * @dev Bids from smart contracts are prohibited to prevent griefing with always reverting receiver
      * @param _tokenId Token ID of the token being auctioned
+     * @param _owner owner of the token being auctioned
      */
-    function placeBid(uint256 _tokenId)
+    function placeBid(uint256 _tokenId, address _owner)
         external
         payable
         nonReentrant
         whenNotPaused
-        onlyCreatedAuction(_tokenId)
+        onlyCreatedAuction(_tokenId, _owner)
     {
         require(
             payable(_msgSender()).isContract() == false,
@@ -186,27 +186,28 @@ contract ERC721Auction is Context, ReentrancyGuard, AdminRole {
 
         // Ensure auction is in flight
         require(
-            _getNow() >= auctions[_tokenId].startTime && _getNow() <= auctions[_tokenId].endTime,
+            _getNow() >= auctions[_tokenId][_owner].startTime && _getNow() <= auctions[_tokenId][_owner].endTime,
             "Auction.placeBid: Bidding outside of the auction window"
         );
 
-        _placeBid(_tokenId);
+        _placeBid(_tokenId, _owner);
 
-        emit BidPlaced(_tokenId, _msgSender(), msg.value);
+        emit BidPlaced(_tokenId, _owner, _msgSender(), msg.value);
     }
 
     /**
      * @notice Given a sender who is in the bid list of auction, allows them to withdraw their bid
      * @dev Only callable by the existing top bidder
      * @param _tokenId Token ID of the token being auctioned
+     * @param _owner Owner of the token being auctioned
      */
-    function withdrawBid(uint256 _tokenId)
+    function withdrawBid(uint256 _tokenId, address _owner)
         external
         nonReentrant
         whenNotPaused
-        onlyCreatedAuction(_tokenId)
+        onlyCreatedAuction(_tokenId, _owner)
     {
-        Bid[] storage bidList = bids[_tokenId];
+        Bid[] storage bidList = bids[_tokenId][_owner];
         require(bidList.length > 0, "Auction.withdrawBid: There is no bid");
 
         uint256 withdrawIndex = bidList.length;
@@ -224,7 +225,7 @@ contract ERC721Auction is Context, ReentrancyGuard, AdminRole {
 
         // Check withdrawal after delay time
         require(
-            _getNow() >= auctions[_tokenId].endTime.add(bidWithdrawalLockTime),
+            _getNow() >= auctions[_tokenId][_owner].endTime.add(bidWithdrawalLockTime),
             "Auction.withdrawBid: Cannot withdraw until auction ends"
         );
 
@@ -237,7 +238,7 @@ contract ERC721Auction is Context, ReentrancyGuard, AdminRole {
         }
         bidList.pop();
 
-        emit BidWithdrawn(_tokenId, _msgSender(), withdrawBidAmount);
+        emit BidWithdrawn(_tokenId, _owner, _msgSender(), withdrawBidAmount);
     }
 
     /**
@@ -246,17 +247,19 @@ contract ERC721Auction is Context, ReentrancyGuard, AdminRole {
      * @dev Auction can only be resulted if there has been a bidder and reserve met.
      * @dev If there have been no bids, the auction needs to be cancelled instead using `cancelAuction()`
      * @param _tokenId Token ID of the token being auctioned
+     * @param _owner Owner of the token being auctioned
      */
-    function endAuction(uint256 _tokenId)
+    function endAuction(uint256 _tokenId, address _owner)
         external
         nonReentrant
-        onlyCreatedAuction(_tokenId)
+        onlyCreatedAuction(_tokenId, _owner)
     {
         require(
-            isAdmin(_msgSender()) || (auctions[_tokenId].owner == _msgSender()),
-            "Auction.endAuction: only admin or auction owner can result the auction"
+            isAdmin(_msgSender()) || _owner == _msgSender(),
+            "Auction.endAuction: Only admin or auction owner can result the auction"
         );
-        Auction memory auction = auctions[_tokenId];
+
+        Auction memory auction = auctions[_tokenId][_owner];
 
         // Check the auction real
         require(
@@ -272,26 +275,21 @@ contract ERC721Auction is Context, ReentrancyGuard, AdminRole {
 
         // Ensure this contract is approved to move the token
         require(
-            token.isApprovedForAll(auction.owner, address(this)),
+            token.isApprovedForAll(_owner, address(this)),
             "Auction.endAuction: auction not approved"
         );
 
         // Get info on who the highest bidder is
-        Bid[] storage bidList = bids[_tokenId];
+        Bid[] storage bidList = bids[_tokenId][_owner];
 
         require(bidList.length > 0, "Auction.endAuction: There is no bid");
 
         Bid memory highestBid = bidList[bidList.length - 1];
 
-        _payoutAuction(auction.owner, highestBid, _tokenId);
+        _payoutAuction(_owner, highestBid);
 
         // Transfer the token to the winner
-        token.safeTransferFrom(auction.owner, highestBid.bidder, _tokenId);
-
-        if (token.supportsInterface(_INTERFACE_ID_HAS_SECONDARY_SALE)) {
-            HasSecondarySale SecondarySale = HasSecondarySale(address(token));
-            SecondarySale.setSecondarySale(_tokenId);
-        }
+        token.safeTransferFrom(_owner, highestBid.bidder, _tokenId, 1, "");
 
         // Refund bid amount to bidders who isn't the top unfortunately
         for (uint256 i = 0; i < bidList.length - 1; i++) {
@@ -299,34 +297,35 @@ contract ERC721Auction is Context, ReentrancyGuard, AdminRole {
         }
 
         // Clean up the highest bid
-        delete bids[_tokenId];
-        delete auctions[_tokenId];
+        delete bids[_tokenId][_owner];
+        delete auctions[_tokenId][_owner];
 
-        emit AuctionResulted(_tokenId, highestBid.bidder, highestBid.bidAmount);
+        emit AuctionResulted(_tokenId, _owner, highestBid.bidder, highestBid.bidAmount);
     }
 
     /**
      * @notice Cancels and inflight and un-resulted auctions, returning the funds to bidders if found
      * @dev Only admin
      * @param _tokenId Token ID of the token being auctioned
+     * @param _owner Owner of the token being auctioned
      */
-    function cancelAuction(uint256 _tokenId)
+    function cancelAuction(uint256 _tokenId, address _owner)
         external
         nonReentrant
-        onlyCreatedAuction(_tokenId)
+        onlyCreatedAuction(_tokenId, _owner)
     {
         require(
-            isAdmin(_msgSender()) || (auctions[_tokenId].owner == _msgSender()),
-            "Auction.cancelAuction: Only admin or auction owner can result the auction"
+            isAdmin(_msgSender()) || _owner == _msgSender(),
+            "Auction.cancelAuction: Only admin or owner can cancel the auction"
         );
         // Check auction is real
         require(
-            auctions[_tokenId].endTime > 0,
+            auctions[_tokenId][_owner].endTime > 0,
             "Auction.cancelAuction: Auction does not exist"
         );
 
         // refund bid amount to existing bidders
-        Bid[] storage bidList = bids[_tokenId];
+        Bid[] storage bidList = bids[_tokenId][_owner];
 
         if(bidList.length > 0) {
             for (uint256 i = 0; i < bidList.length; i++) {
@@ -334,13 +333,13 @@ contract ERC721Auction is Context, ReentrancyGuard, AdminRole {
             }
 
             // Clear up highest bid
-            delete bids[_tokenId];
+            delete bids[_tokenId][_owner];
         }
 
         // Remove auction and top bidder
-        delete auctions[_tokenId];
+        delete auctions[_tokenId][_owner];
 
-        emit AuctionCancelled(_tokenId);
+        emit AuctionCancelled(_tokenId, _owner);
     }
 
     /**
@@ -387,20 +386,21 @@ contract ERC721Auction is Context, ReentrancyGuard, AdminRole {
      * @dev Only admin
      * @dev Auction must exist
      * @param _tokenId Token ID of the token being auctioned
+     * @param _owner Owner of the token being auctioned
      * @param _startTime New start time (unix epoch in seconds)
      */
-    function updateAuctionStartTime(uint256 _tokenId, uint256 _startTime)
+    function updateAuctionStartTime(uint256 _tokenId, address _owner, uint256 _startTime)
         external
         onlyAdmin
-        onlyCreatedAuction(_tokenId)
+        onlyCreatedAuction(_tokenId, _owner)
     {
         require(
-            auctions[_tokenId].endTime > 0,
+            auctions[_tokenId][_owner].endTime > 0,
             "Auction.updateAuctionStartTime: No Auction exists"
         );
 
-        auctions[_tokenId].startTime = _startTime;
-        emit AuctionStartTimeUpdated(_tokenId, _startTime);
+        auctions[_tokenId][_owner].startTime = _startTime;
+        emit AuctionStartTimeUpdated(_tokenId, _owner, _startTime);
     }
 
     /**
@@ -408,19 +408,20 @@ contract ERC721Auction is Context, ReentrancyGuard, AdminRole {
      * @dev Only admin
      * @dev Auction must exist
      * @param _tokenId Token ID of the token being auctioned
+     * @param _owner Owner of the token being auctioned
      * @param _endTimestamp New end time (unix epoch in seconds)
      */
-    function updateAuctionEndTime(uint256 _tokenId, uint256 _endTimestamp)
+    function updateAuctionEndTime(uint256 _tokenId, address _owner, uint256 _endTimestamp)
         external
         onlyAdmin
-        onlyCreatedAuction(_tokenId)
+        onlyCreatedAuction(_tokenId, _owner)
     {
         require(
-            auctions[_tokenId].endTime > 0,
+            auctions[_tokenId][_owner].endTime > 0,
             "Auction.updateAuctionEndTime: No Auction exists"
         );
         require(
-            auctions[_tokenId].startTime < _endTimestamp,
+            auctions[_tokenId][_owner].startTime < _endTimestamp,
             "Auction.updateAuctionEndTime: End time must be greater than start"
         );
         require(
@@ -428,28 +429,30 @@ contract ERC721Auction is Context, ReentrancyGuard, AdminRole {
             "Auction.updateAuctionEndTime: End time passed. Nobody can bid"
         );
 
-        _updateAuctionEndTime(_tokenId, _endTimestamp);
+        _updateAuctionEndTime(_tokenId, _owner, _endTimestamp);
     }
 
     /**
      * @notice Method for getting all info about the auction
      * @param _tokenId Token ID of the token being auctioned
+     * @param _owner Owner of the token being auctioned
      */
-    function getAuction(uint256 _tokenId)
+    function getAuction(uint256 _tokenId, address _owner)
         external
         view
-        onlyCreatedAuction(_tokenId)
+        onlyCreatedAuction(_tokenId, _owner)
         returns (Auction memory)
     {
-        return auctions[_tokenId];
+        return auctions[_tokenId][_owner];
     }
 
     /**
      * @notice Method for getting all info about the bids
      * @param _tokenId Token ID of the token being auctioned
+     * @param _owner Owner of the token being auctioned 
      */
-    function getBidList(uint256 _tokenId) public view returns (Bid[] memory) {
-        return bids[_tokenId];
+    function getBidList(uint256 _tokenId, address _owner) public view returns (Bid[] memory) {
+        return bids[_tokenId][_owner];
     }
 
     function _getNow() internal view virtual returns (uint256) {
@@ -470,7 +473,7 @@ contract ERC721Auction is Context, ReentrancyGuard, AdminRole {
     ) private {
         // Check the auction alreay created
         require(
-            auctions[_tokenId].created == false,
+            auctions[_tokenId][_msgSender()].created == false,
             "Auction.createAuction: Auction has been already created"
         );
         // Check end time not before start time and that end is in the future
@@ -484,8 +487,7 @@ contract ERC721Auction is Context, ReentrancyGuard, AdminRole {
         );
 
         // Setup the auction
-        auctions[_tokenId] = Auction({
-            owner: _msgSender(),
+        auctions[_tokenId][_msgSender()] = Auction({
             startPrice: _startPrice,
             startTime: _startTimestamp,
             endTime: _endTimestamp,
@@ -511,13 +513,14 @@ contract ERC721Auction is Context, ReentrancyGuard, AdminRole {
     /**
      * @notice Used for placing bid with token id
      * @param _tokenId id of the token
+     * @param _owner owner of the token 
      */
-    function _placeBid(uint256 _tokenId) private {
+    function _placeBid(uint256 _tokenId, address _owner) private {
         uint256 bidAmount = msg.value;
         uint256 actualBidAmount = bidAmount.mul(10000).div(serviceFeeProxy.getBuyServiceFeeBps(msg.sender).add(10000));
 
         // Ensure bid adheres to outbid increment and threshold
-        Bid[] storage bidList = bids[_tokenId];
+        Bid[] storage bidList = bids[_tokenId][_owner];
 
         if (bidList.length != 0) {
             Bid memory prevHighestBid = bidList[bidList.length - 1];
@@ -529,7 +532,7 @@ contract ERC721Auction is Context, ReentrancyGuard, AdminRole {
             );
         } else {
             require(
-                actualBidAmount >= auctions[_tokenId].startPrice,
+                actualBidAmount >= auctions[_tokenId][_owner].startPrice,
                 "Auction.placeBid: Bid amount should be higher than start price"
             );
         }
@@ -556,8 +559,8 @@ contract ERC721Auction is Context, ReentrancyGuard, AdminRole {
         }
 
         //Increase auction end time if bid time is more than 5 mins before end time
-        if(auctions[_tokenId].endTime <= newHighestBid.bidTime.add(bidLimitBeforeEndTime)) {
-            _updateAuctionEndTime(_tokenId, auctions[_tokenId].endTime.add(bidLimitBeforeEndTime));
+        if(auctions[_tokenId][_owner].endTime <= newHighestBid.bidTime.add(bidLimitBeforeEndTime)) {
+            _updateAuctionEndTime(_tokenId, _owner, auctions[_tokenId][_owner].endTime.add(bidLimitBeforeEndTime));
         }
     }
 
@@ -566,17 +569,11 @@ contract ERC721Auction is Context, ReentrancyGuard, AdminRole {
      * @param _owner owner of the auction
      * @param _highestBid the highest Bid object
      */
-    function _payoutAuction(address _owner, Bid memory _highestBid, uint256 _tokenId) private {
+    function _payoutAuction(address _owner, Bid memory _highestBid) private {
         uint256 winningBidAmount = _highestBid.bidAmount;
-        bool isSecondarySale;
-        if (token.supportsInterface(_INTERFACE_ID_HAS_SECONDARY_SALE)) {
-            HasSecondarySale SecondarySale = HasSecondarySale(address(token));
-            isSecondarySale = SecondarySale.checkSecondarySale(_tokenId);
-        }
-
-        // Work out platform fee from above reserve amount
         uint256 actualBidAmount = _highestBid.actualBidAmount;
-        uint256 totalServiceFee = winningBidAmount.sub(actualBidAmount).add(actualBidAmount.mul(serviceFeeProxy.getSellServiceFeeBps(_owner, isSecondarySale)).div(10000));
+        // Work out platform fee from above reserve amount
+        uint256 totalServiceFee = winningBidAmount.sub(actualBidAmount).add(actualBidAmount.mul(serviceFeeProxy.getSellServiceFeeBps(_owner, false)).div(10000));
 
         // Send platform fee
         address payable serviceFeeRecipient = serviceFeeProxy.getServiceFeeRecipient();
@@ -601,11 +598,12 @@ contract ERC721Auction is Context, ReentrancyGuard, AdminRole {
     /**
      * @notice Used for update auction end time
      * @param _tokenId Id of the token
+     * @param _owner Owner of the token
      * @param _endTimestamp timestamp of end time
      */
-    function _updateAuctionEndTime(uint256 _tokenId, uint256 _endTimestamp) private {
-        auctions[_tokenId].endTime = _endTimestamp;
-        emit AuctionEndTimeUpdated(_tokenId, _endTimestamp);
+    function _updateAuctionEndTime(uint256 _tokenId, address _owner, uint256 _endTimestamp) private {
+        auctions[_tokenId][_owner].endTime = _endTimestamp;
+        emit AuctionEndTimeUpdated(_tokenId, _owner, _endTimestamp);
     }
 
     /**
@@ -627,4 +625,3 @@ contract ERC721Auction is Context, ReentrancyGuard, AdminRole {
         emit Destroy();
     }
 }
-
